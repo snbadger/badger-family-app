@@ -1,7 +1,7 @@
 (function () {
   'use strict';
   const CFG = window.BADGER_CONFIG;
-  const sb = window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_KEY);
+  const sb = window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: 'badger-family-auth' } });
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => Array.from(el.querySelectorAll(s));
   const view = $('#view');
@@ -151,9 +151,20 @@
   }
   async function loadMe() {
     if (!S.session?.user?.id) { await sb.auth.signOut(); return renderAuth(); }
-    let me = null;
-    for (let i = 0; i < 4 && !me; i++) { me = await q(sb.from('profiles').select('*').eq('id', S.session.user.id).maybeSingle()); if (!me) await new Promise(r => setTimeout(r, 600)); }
-    if (!me) { await sb.auth.signOut(); renderAuth('signin', 'That account is no longer active. Please sign in again or create a new account.'); return; }
+    let me = null, lastErr = null;
+    for (let i = 0; i < 4 && !me; i++) {
+      const { data, error } = await sb.from('profiles').select('*').eq('id', S.session.user.id).maybeSingle();
+      if (error) { lastErr = error; await new Promise(r => setTimeout(r, 800)); continue; }
+      me = data; if (!me) await new Promise(r => setTimeout(r, 600));
+    }
+    if (!me) {
+      // Network hiccup or expired token: keep the saved session and offer a retry instead of signing out.
+      if (lastErr) { view.innerHTML = `<div class="empty">Couldn't reach the family database (${esc(lastErr.message)}).<br><br><button class="btn" id="retry-me">Try again</button></div>`; $('#retry-me').onclick = loadMe; return; }
+      // Session is valid but the profile row is gone: the account was removed by a parent.
+      const { data: { user } } = await sb.auth.getUser();
+      if (!user) { await sb.auth.signOut(); return renderAuth('signin', 'Your session expired. Please sign in again.'); }
+      await sb.auth.signOut(); return renderAuth('signin', 'That account is no longer active. Please sign in again or create a new account.');
+    }
     S.me = me;
     if (!me.approved) return renderWaiting();
     S.profiles = await q(sb.from('profiles').select('*').order('created_at'));
@@ -562,5 +573,6 @@
     $('#signout').onclick = () => sb.auth.signOut();
   }
 
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.me && $('#modal').hidden) go(S.tab); });
   boot();
 })();
