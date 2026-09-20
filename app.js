@@ -10,6 +10,7 @@
   // ───────── helpers ─────────
   const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const CATS = { family: '👨‍👩‍👧‍👦 Family', fhe: '🏠 FHE', trip: '🚗 Trip', church: '⛪ Church', school: '🎓 School', sports: '🏀 Sports', other: '📌 Other' };
+  const AREAS = { spiritual: ['Spiritual', '🙏', 'favour with God'], social: ['Social', '🤝', 'favour with man'], physical: ['Physical', '💪', 'stature'], intellectual: ['Intellectual', '📖', 'wisdom'] };
   const EMOJIS = ['🦡', '😀', '😎', '🤓', '🥳', '🦁', '🐯', '🐻', '🦊', '🐼', '🐨', '🦄', '🐸', '🐙', '🦖', '🚀', '⚽', '🎸', '🎨', '📚', '🌟', '🔥', '🍕', '🌮'];
   const COLORS = ['#1f3a5f', '#2e7d7b', '#b83232', '#c47f17', '#2f7a3d', '#6b3fa0', '#d6336c', '#0b7285', '#5c4033', '#495057'];
   const pad = n => String(n).padStart(2, '0');
@@ -136,9 +137,10 @@
     if (!session) renderAuth(); else loadMe();
   }
   async function loadMe() {
+    if (!S.session?.user?.id) { await sb.auth.signOut(); return renderAuth(); }
     let me = null;
     for (let i = 0; i < 4 && !me; i++) { me = await q(sb.from('profiles').select('*').eq('id', S.session.user.id).maybeSingle()); if (!me) await new Promise(r => setTimeout(r, 600)); }
-    if (!me) { view.innerHTML = '<div class="empty">Could not load your profile. Try refreshing.</div>'; return; }
+    if (!me) { await sb.auth.signOut(); renderAuth('signin', 'That account is no longer active. Please sign in again or create a new account.'); return; }
     S.me = me;
     if (!me.approved) return renderWaiting();
     S.profiles = await q(sb.from('profiles').select('*').order('created_at'));
@@ -402,8 +404,9 @@
       onDelete: existing ? async () => { await q(sb.from('rocks').delete().eq('id', existing.id)); go('goals'); } : null
     });
   }
-  function goalForm(pid, existing) {
+  function goalForm(pid, existing, area) {
     const fields = [
+      { name: 'area', label: 'Area', type: 'select', value: existing?.area || area || 'spiritual', options: Object.entries(AREAS).map(([v, [l, e]]) => ({ v, l: `${e} ${l}` })) },
       { name: 'title', label: 'My goal (what, exactly)', required: true, value: existing?.title },
       { name: 'why', label: 'Why it matters to me', type: 'textarea', value: existing?.why || '' },
       { name: 'done_looks_like', label: '"Done" looks like', type: 'textarea', value: existing?.done_looks_like || '' },
@@ -412,9 +415,9 @@
       ...(existing ? [{ name: 'status', label: 'Status', type: 'select', value: existing.status, options: [{ v: 'active', l: 'Active' }, { v: 'done', l: 'Finished' }, { v: 'paused', l: 'Paused' }] }] : [])
     ];
     openForm({
-      title: existing ? 'Edit goal' : 'One goal, four weeks', fields,
+      title: existing ? 'Edit goal' : `${AREAS[area || 'spiritual'][1]} ${AREAS[area || 'spiritual'][0]} goal · 4 weeks`, fields,
       onSubmit: async v => {
-        const row = { profile_id: pid, title: v.title.trim(), why: v.why.trim() || null, done_looks_like: v.done_looks_like.trim() || null, first_step: v.first_step.trim() || null, start_date: v.start_date, end_date: addDays(v.start_date, 28), ...(existing ? { status: v.status } : {}) };
+        const row = { profile_id: pid, area: v.area, title: v.title.trim(), why: v.why.trim() || null, done_looks_like: v.done_looks_like.trim() || null, first_step: v.first_step.trim() || null, start_date: v.start_date, end_date: addDays(v.start_date, 28), ...(existing ? { status: v.status } : {}) };
         if (existing) await q(sb.from('goals').update(row).eq('id', existing.id)); else await q(sb.from('goals').insert(row));
         go('goals');
       },
@@ -441,33 +444,37 @@
       q(sb.from('goal_checkins').select('*'))
     ]);
     if (S.tab !== 'goals') return;
-    const active = goals.find(g => g.status === 'active'); const past = goals.filter(g => g.status !== 'active');
-    const mine = canEditFor(pid);
-    let goalHtml;
-    if (active) {
-      const t = today(); const wkNo = Math.min(4, Math.max(1, Math.floor(daysBetween(active.start_date, t) / 7) + 1)); const left = daysBetween(t, active.end_date);
-      const cis = checkins.filter(c => c.goal_id === active.id);
-      goalHtml = `<div class="card"><div class="row between"><h3>${esc(active.title)}</h3><span class="pill teal">Week ${wkNo} of 4</span></div>
-        <div class="progress"><i style="width:${Math.min(100, Math.max(0, daysBetween(active.start_date, t) / 28 * 100))}%"></i></div>
-        <div class="tiny muted" style="margin:4px 0 8px">${left >= 0 ? left + ' days left' : 'Past finish line'} · finish by ${fmtDate(active.end_date)}</div>
-        ${active.why ? `<p class="small"><b>Why:</b> ${esc(active.why)}</p>` : ''}${active.done_looks_like ? `<p class="small"><b>Done looks like:</b> ${esc(active.done_looks_like)}</p>` : ''}${active.first_step ? `<p class="small"><b>First step:</b> ${esc(active.first_step)}</p>` : ''}
-        <h2>Sunday check-ins</h2>${[1, 2, 3, 4].map(w => { const c = cis.find(x => x.week_no === w); return `<div class="item"><span class="pill ${c ? 'green' : w === wkNo ? 'amber' : ''}">Wk ${w}</span><div class="grow small">${c ? `<div><b>Did:</b> ${esc(c.did || '—')}</div><div><b>In the way:</b> ${esc(c.obstacle || '—')}</div><div><b>Next:</b> ${esc(c.next_step || '—')}</div>` : '<span class="muted">Not yet</span>'}</div>${mine ? `<button class="btn sm secondary" data-ci="${w}">${c ? 'Edit' : 'Fill in'}</button>` : ''}</div>`; }).join('')}
-        ${mine ? `<div class="row" style="margin-top:10px"><button class="btn ghost sm" id="edit-goal">Edit goal</button><span class="grow"></span><button class="btn sm" id="finish-goal">I finished it 🎉</button></div>` : ''}</div>`;
-    } else goalHtml = `<div class="card"><div class="empty">No active 4-week goal.${mine ? '<br><br>Small enough to finish, big enough to matter.' : ''}</div>${mine ? '<button class="btn block" id="new-goal">Set a 4-week goal</button>' : ''}</div>`;
+    const actives = goals.filter(g => g.status === 'active'); const past = goals.filter(g => g.status !== 'active');
+    const mine = canEditFor(pid); const t = today();
+    const goalCard = area => {
+      const [label, icon, hint] = AREAS[area]; const g = actives.find(x => x.area === area);
+      if (!g) return `<div class="card"><div class="row between"><h3>${icon} ${label} <span class="tiny muted" style="font-weight:400">· ${hint}</span></h3>${mine ? `<button class="btn sm secondary" data-newgoal="${area}">Set a goal</button>` : '<span class="tiny muted">no goal yet</span>'}</div></div>`;
+      const wkNo = Math.min(4, Math.max(1, Math.floor(daysBetween(g.start_date, t) / 7) + 1)); const left = daysBetween(t, g.end_date);
+      const cis = checkins.filter(c => c.goal_id === g.id);
+      return `<div class="card"><div class="tiny muted">${icon} ${label} · ${hint}</div><div class="row between"><h3>${esc(g.title)}</h3><span class="pill teal">Wk ${wkNo}/4</span></div>
+        <div class="progress"><i style="width:${Math.min(100, Math.max(0, daysBetween(g.start_date, t) / 28 * 100))}%"></i></div>
+        <div class="tiny muted" style="margin:4px 0 6px">${left >= 0 ? left + ' days left' : 'Past finish line'} · finish by ${fmtDate(g.end_date)}</div>
+        ${g.why ? `<div class="small"><b>Why:</b> ${esc(g.why)}</div>` : ''}${g.done_looks_like ? `<div class="small"><b>Done looks like:</b> ${esc(g.done_looks_like)}</div>` : ''}${g.first_step ? `<div class="small"><b>First step:</b> ${esc(g.first_step)}</div>` : ''}
+        <div class="row" style="margin-top:8px;gap:6px;flex-wrap:wrap">${[1, 2, 3, 4].map(w => { const c = cis.find(x => x.week_no === w); return mine ? `<button class="btn sm ${c ? 'secondary' : ''}" data-ci="${w}" data-goal="${g.id}" title="${c ? esc(c.did || '') : ''}">${c ? '✓ ' : ''}Wk ${w}</button>` : `<span class="pill ${c ? 'green' : ''}">Wk ${w}${c ? ' ✓' : ''}</span>`; }).join('')}</div>
+        ${cis.length ? `<div class="tiny muted" style="margin-top:6px">Latest: ${esc(cis.sort((x, y) => y.week_no - x.week_no)[0].next_step || cis[0].did || '')}</div>` : ''}
+        ${mine ? `<div class="row" style="margin-top:8px"><button class="btn ghost sm" data-editgoal="${g.id}">Edit</button><span class="grow"></span><button class="btn sm" data-finish="${g.id}">Finished 🎉</button></div>` : ''}</div>`;
+    };
     view.innerHTML = `<h1>Goals</h1>${personChips(renderGoals, false)}
       <h2>My rocks this week</h2>${weekNav(renderGoals)}
-      <div class="card">${rocks.length ? rocks.map(r => `<div class="item ${r.done ? 'done' : ''}"><button class="check ${r.done ? 'on' : ''}" data-rock="${r.id}">${r.done ? '✓' : ''}</button><div class="grow" data-editrock="${r.id}"><div class="title">${esc(r.title)}</div><div class="tiny muted">${r.day_of_week != null ? DAYS[r.day_of_week] : '<span class="pill red">no day yet</span>'}${r.at_time ? ' · ' + fmtClock(r.at_time) : ''}</div></div></div>`).join('') : '<div class="empty">No rocks yet. Pick 1 to 3 things that matter most this week and give each a day and time.</div>'}
+      <div class="card">${rocks.length ? rocks.map(r => `<div class="item ${r.done ? 'done' : ''}"><button class="check ${r.done ? 'on' : ''}" data-rock="${r.id}">${r.done ? '✓' : ''}</button><div class="grow" data-editrock="${r.id}"><div class="title">${esc(r.title)}</div><div class="tiny muted">${r.day_of_week != null ? DAYS[r.day_of_week] : '<span class="pill red">no day yet</span>'}${r.at_time ? ' · ' + fmtClock(r.at_time) : ''}</div></div></div>`).join('') : '<div class="empty">No rocks yet. Pick 1 to 3 things that matter most this week and give each a day and time. At least one should move a goal below.</div>'}
         ${mine ? `<button class="btn secondary block" id="add-rock" style="margin-top:8px">${rocks.length >= 3 ? 'Add another (3 is plenty)' : '+ Add a rock'}</button>` : ''}</div>
-      <div class="callout"><b>Sunday sit-down (10 min):</b> look back at last week · add fixed stuff · place 1–3 rocks · set phone alerts · show a parent.</div>
-      <h2>Four-week goal</h2>${goalHtml}
-      ${past.length ? `<h2>Past goals</h2><div class="card">${past.map(g => `<div class="item"><span class="pill ${g.status === 'done' ? 'green' : ''}">${g.status}</span><div class="grow small">${esc(g.title)}<div class="tiny muted">${fmtDate(g.start_date)} → ${fmtDate(g.end_date)}</div></div></div>`).join('')}</div>` : ''}`;
+      <div class="callout"><b>Sunday sit-down (10 min):</b> look back at last week · add fixed stuff · place 1–3 rocks · set phone alerts · tap each goal's week button to check in.</div>
+      <h2>Four areas · four weeks</h2>
+      <div class="callout" style="margin-bottom:10px"><i>"And Jesus increased in wisdom and stature, and in favour with God and man."</i> — Luke 2:52. One small goal in each area, finished in four weeks.</div>
+      ${['spiritual', 'social', 'physical', 'intellectual'].map(goalCard).join('')}
+      ${past.length ? `<h2>Past goals</h2><div class="card">${past.map(g => `<div class="item"><span class="pill ${g.status === 'done' ? 'green' : ''}">${g.status}</span><div class="grow small">${AREAS[g.area]?.[1] || ''} ${esc(g.title)}<div class="tiny muted">${fmtDate(g.start_date)} → ${fmtDate(g.end_date)}</div></div>${mine ? `<button class="btn ghost sm" data-editgoal="${g.id}">Edit</button>` : ''}</div>`).join('')}</div>` : ''}`;
     $$('[data-rock]').forEach(b => b.onclick = async () => { if (!mine) return; const r = rocks.find(x => x.id === b.dataset.rock); await q(sb.from('rocks').update({ done: !r.done }).eq('id', r.id)); renderGoals(); });
     $$('[data-editrock]').forEach(el => el.onclick = () => { if (mine) rockForm(pid, rocks.find(x => x.id === el.dataset.editrock)); });
     $('#add-rock') && ($('#add-rock').onclick = () => rockForm(pid));
-    $('#new-goal') && ($('#new-goal').onclick = () => goalForm(pid));
-    $('#edit-goal') && ($('#edit-goal').onclick = () => goalForm(pid, active));
-    $('#finish-goal') && ($('#finish-goal').onclick = async () => { if (confirm('Mark this goal finished?')) { await q(sb.from('goals').update({ status: 'done' }).eq('id', active.id)); renderGoals(); } });
-    $$('[data-ci]').forEach(b => b.onclick = () => checkinForm(active, Number(b.dataset.ci), checkins.find(x => x.goal_id === active.id && x.week_no === Number(b.dataset.ci))));
+    $$('[data-newgoal]').forEach(b => b.onclick = () => goalForm(pid, null, b.dataset.newgoal));
+    $$('[data-editgoal]').forEach(b => b.onclick = () => goalForm(pid, goals.find(g => g.id === b.dataset.editgoal)));
+    $$('[data-finish]').forEach(b => b.onclick = async () => { if (confirm('Mark this goal finished?')) { await q(sb.from('goals').update({ status: 'done' }).eq('id', b.dataset.finish)); renderGoals(); } });
+    $$('[data-ci]').forEach(b => b.onclick = () => { const g = goals.find(x => x.id === b.dataset.goal); const w = Number(b.dataset.ci); checkinForm(g, w, checkins.find(x => x.goal_id === g.id && x.week_no === w)); });
   }
 
   // ───────── home ─────────
@@ -478,13 +485,13 @@
       q(sb.from('assignments').select('*').neq('status', 'done').order('due_date', { nullsFirst: false })),
       q(sb.from('events').select('*').gte('starts_at', new Date(t + 'T00:00:00').toISOString()).lte('starts_at', new Date(addDays(t, 7) + 'T23:59:59').toISOString()).order('starts_at')),
       q(sb.from('rocks').select('*').eq('profile_id', S.me.id).eq('week_start', ws).order('day_of_week', { nullsFirst: false })),
-      q(sb.from('goals').select('*').eq('profile_id', S.me.id).eq('status', 'active').limit(1))
+      q(sb.from('goals').select('*').eq('profile_id', S.me.id).eq('status', 'active').order('created_at'))
     ]);
     if (S.tab !== 'home') return;
     const myChores = chores.filter(c => c.assigned_to === S.me.id && choreDue(c, t, comps.filter(x => x.chore_id === c.id)));
     const myAssign = assigns.filter(a => a.profile_id === S.me.id && (!a.due_date || a.due_date <= addDays(t, 3)));
     const kidsLate = isParent() ? assigns.filter(a => a.due_date && a.due_date < t) : [];
-    const goal = goals[0]; const isSunday = new Date().getDay() === 0;
+    const isSunday = new Date().getDay() === 0;
     const hour = new Date().getHours(); const greet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
     view.innerHTML = `<h1>${greet}, ${esc(S.me.display_name)} ${esc(S.me.emoji)}</h1>
       ${isSunday ? '<div class="callout" style="margin-bottom:10px"><b>It\'s Sunday.</b> Ten minutes: plan next week\'s rocks and do your goal check-in. <a href="#" data-go="goals">Open Goals ›</a></div>' : ''}
@@ -492,7 +499,7 @@
       <h2>School · due soon</h2><div class="card">${myAssign.length ? myAssign.map(a => `<div class="item"><div class="grow"><div class="title">${esc(a.title)}</div><div class="tiny muted">${esc(a.class_name || '')}${a.due_date ? ' · ' + (a.due_date < t ? '<span class="pill red">Late</span> ' : '') + fmtDate(a.due_date) : ''}</div></div></div>`).join('') : '<div class="empty">Nothing due in the next 3 days.</div>'}
         ${kidsLate.length ? `<div class="item"><span class="pill red">Parent view</span><div class="grow small">${kidsLate.length} overdue across the family: ${kidsLate.map(a => esc(pname(a.profile_id))).filter((v, i, arr) => arr.indexOf(v) === i).join(', ')}</div></div>` : ''}</div>
       <h2>My rocks this week</h2><div class="card rockbox">${rocks.length ? rocks.map(r => `<div class="item ${r.done ? 'done' : ''}"><span>${r.done ? '✅' : '🪨'}</span><div class="grow"><div class="title">${esc(r.title)}</div><div class="tiny muted">${r.day_of_week != null ? DAYS[r.day_of_week] : 'no day'}${r.at_time ? ' · ' + fmtClock(r.at_time) : ''}</div></div></div>`).join('') : '<div class="empty">No rocks placed. <a href="#" data-go="goals">Pick 1–3 ›</a></div>'}
-        ${goal ? `<div class="item"><span>🎯</span><div class="grow small"><b>${esc(goal.title)}</b><div class="tiny muted">${Math.max(0, daysBetween(t, goal.end_date))} days left</div></div></div>` : ''}</div>
+        ${goals.map(g => `<div class="item"><span>${AREAS[g.area]?.[1] || '🎯'}</span><div class="grow small"><b>${esc(g.title)}</b><div class="tiny muted">${AREAS[g.area]?.[0] || ''} · ${Math.max(0, daysBetween(t, g.end_date))} days left</div></div></div>`).join('')}${goals.length < 4 ? `<div class="item tiny muted">${4 - goals.length} of 4 areas still need a goal. <a href="#" data-go="goals">Set one ›</a></div>` : ''}</div>
       <h2>Coming up this week</h2><div class="card">${evs.length ? evs.map(e => `<div class="item"><div class="small muted" style="min-width:64px">${fmtDate(isoDate(e.starts_at)).split(',')[0]}<br>${e.all_day ? 'all day' : fmtTime(e.starts_at)}</div><div class="grow"><div class="title">${esc(e.title)}</div><div class="tiny muted">${CATS[e.category] || ''}${e.location ? ' · ' + esc(e.location) : ''}</div></div></div>`).join('') : '<div class="empty">Nothing on the family calendar this week.</div>'}</div>`;
     $$('.check[data-c]').forEach(b => b.onclick = () => toggleChore(chores.find(c => c.id === b.dataset.c), t, comps, renderHome));
     $$('[data-go]').forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.go); });
