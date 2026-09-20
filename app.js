@@ -520,34 +520,93 @@
     $$('[data-ci]').forEach(b => b.onclick = () => { const g = goals.find(x => x.id === b.dataset.goal); const w = Number(b.dataset.ci); checkinForm(g, w, checkins.find(x => x.goal_id === g.id && x.week_no === w)); });
   }
 
+  // ───────── rings (daily, fitness-style) ─────────
+  // Outer = Chores (fills done ÷ due), middle = School for kids / Projects for parents, inner = Rocks.
+  // Middle and inner close when at least one item was checked off that day. A ring with nothing
+  // due stays open until something is checked off — every day needs visible progress.
+  const RING_COLORS = { chores: '#fa114f', school: '#92e82a', projects: '#92e82a', rocks: '#00d5ff' };
+  const RING_LABELS = { chores: 'Chores', school: 'School', projects: 'Projects', rocks: 'Rocks' };
+  const doneOn = (rows, d) => rows.filter(r => r.done_at && isoDate(r.done_at) === d);
+  function ringStats(p, d, data) {
+    const parent = p.role === 'parent';
+    const mineDue = data.chores.filter(c => assigneeOn(c, d) === p.id && choreDue(c, d, data.comps.filter(x => x.chore_id === c.id)));
+    const myComps = data.comps.filter(x => x.profile_id === p.id && x.done_on === d);
+    const due = mineDue.length, done = mineDue.filter(c => myComps.some(x => x.chore_id === c.id)).length;
+    const chores = due
+      ? { key: 'chores', pct: done / due, text: `${done} of ${due} done` }
+      : { key: 'chores', pct: myComps.length ? 1 : 0, text: myComps.length ? `${myComps.length} done` : 'none due · do one anyway', unset: !myComps.length };
+    const midKey = parent ? 'projects' : 'school';
+    const midRows = parent ? data.tasks.filter(t => t.assigned_to === p.id || t.done_by === p.id) : data.assigns.filter(a => a.profile_id === p.id);
+    const midOpen = parent ? midRows.filter(t => t.status !== 'done' && t.assigned_to === p.id).length : midRows.filter(a => a.status !== 'done').length;
+    const midN = doneOn(midRows, d).length;
+    const middle = { key: midKey, pct: midN ? 1 : 0, text: midN ? `${midN} checked off` : midOpen ? `${midOpen} open · finish one` : (parent ? 'no tasks · finish one' : 'nothing listed · add & finish one'), unset: !midN && !midOpen };
+    const myRocks = data.rocks.filter(r => r.profile_id === p.id);
+    const placed = myRocks.filter(r => r.week_start === monday(d)).length;
+    const rockN = doneOn(myRocks, d).length;
+    const rocks = { key: 'rocks', pct: rockN ? 1 : 0, text: rockN ? `${rockN} checked off` : placed ? `${placed} placed · knock one out` : 'no rocks placed', unset: !rockN && !placed };
+    const rings = [chores, middle, rocks].map(r => ({ ...r, color: RING_COLORS[r.key], label: RING_LABELS[r.key] }));
+    return { rings, closedCount: rings.filter(r => r.pct >= 1).length, closed: rings.every(r => r.pct >= 1) };
+  }
+  function ringSvg(rings, size) {
+    const cx = size / 2, w = Math.round(size * 0.115), gap = Math.round(w * 0.3);
+    return `<svg class="rings" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true">${rings.map((r, i) => {
+      const rad = cx - w / 2 - i * (w + gap), C = 2 * Math.PI * rad, pct = Math.min(1, Math.max(0, r.pct));
+      return `<circle cx="${cx}" cy="${cx}" r="${rad}" stroke="${r.color}" stroke-opacity=".2" stroke-width="${w}" fill="none"/>` +
+        (pct > 0 ? `<circle class="arc" cx="${cx}" cy="${cx}" r="${rad}" stroke="${r.color}" stroke-width="${w}" fill="none" stroke-linecap="round" stroke-dasharray="${(C * pct).toFixed(2)} ${(C + 10).toFixed(2)}" transform="rotate(-90 ${cx} ${cx})"/>` : '');
+    }).join('')}</svg>`;
+  }
+  function ringsHtml(data, t) {
+    const ws = monday(t);
+    const people = [S.me, ...S.profiles.filter(p => p.approved && p.id !== S.me.id)];
+    const cards = people.map(p => {
+      const st = ringStats(p, t, data);
+      let streak = 0; for (let d = ws; d <= t; d = addDays(d, 1)) if (ringStats(p, d, data).closed) streak++;
+      const me = p.id === S.me.id, size = me ? 110 : 70;
+      return `<button class="ringp ${me ? 'me' : ''} ${st.closed ? 'closed' : ''}" data-ring="${p.id}" title="${esc(p.display_name)}'s chores">
+        <span class="rw">${ringSvg(st.rings, size)}<span class="ctr">${esc(p.emoji)}</span></span>
+        <span class="nm">${me ? 'Me' : esc(p.display_name)}</span>
+        <span class="st">${st.closed ? '✓ closed' : `${st.closedCount}/3 rings`}${streak ? ` · 🔥${streak}` : ''}</span></button>`;
+    }).join('');
+    const mine = ringStats(S.me, t, data);
+    return `<div class="ringrow">${cards}</div>
+      <div class="card ringkey">${mine.rings.map(r => `<div class="k"><span class="dot" style="background:${r.color}"></span><span class="lb">${r.label}</span><span class="small ${r.pct >= 1 ? 'ok' : 'muted'}">${r.pct >= 1 ? '✓ ' : ''}${esc(r.text)}</span></div>`).join('')}
+        ${mine.closed ? '<div class="tiny ok" style="margin-top:6px">All three rings closed today. 🎉</div>' : '<div class="tiny muted" style="margin-top:6px">Close all three by checking something off in each area today. Rings reset at midnight.</div>'}</div>`;
+  }
+
   // ───────── home ─────────
   async function renderHome() {
-    const t = today(); const ws = monday(t);
-    const [{ chores, comps }, assigns, evs, rocks, goals] = await Promise.all([
+    const t = today(); const ws = monday(t); const wsIso = new Date(ws + 'T00:00:00').toISOString();
+    const [{ chores, comps }, assigns, evs, rocks, goals, tasks] = await Promise.all([
       loadChores(ws),
-      q(sb.from('assignments').select('*').neq('status', 'done').order('due_date', { nullsFirst: false })),
+      q(sb.from('assignments').select('*').or(`status.neq.done,done_at.gte.${wsIso}`).order('due_date', { nullsFirst: false })),
       q(sb.from('events').select('*').gte('starts_at', new Date(t + 'T00:00:00').toISOString()).lte('starts_at', new Date(addDays(t, 7) + 'T23:59:59').toISOString()).order('starts_at')),
-      q(sb.from('rocks').select('*').eq('profile_id', S.me.id).eq('week_start', ws).order('day_of_week', { nullsFirst: false })),
-      q(sb.from('goals').select('*').eq('profile_id', S.me.id).eq('status', 'active').order('created_at'))
+      q(sb.from('rocks').select('*').or(`week_start.eq.${ws},done_at.gte.${wsIso}`).order('day_of_week', { nullsFirst: false })),
+      q(sb.from('goals').select('*').eq('profile_id', S.me.id).eq('status', 'active').order('created_at')),
+      q(sb.from('project_tasks').select('*').or(`done_at.gte.${wsIso},and(status.neq.done,assigned_to.not.is.null)`))
     ]);
     const gAll = await loadGcal();
     if (S.tab !== 'home') return;
     const gWeek = gAll.filter(g => dayOf(g) >= t && dayOf(g) <= addDays(t, 7));
     const week = [...evs, ...gWeek].sort((a, b) => dayOf(a).localeCompare(dayOf(b)) || a.starts_at.localeCompare(b.starts_at));
+    const openAssigns = assigns.filter(a => a.status !== 'done');
     const myChores = chores.filter(c => assigneeOn(c, t) === S.me.id && choreDue(c, t, comps.filter(x => x.chore_id === c.id)));
-    const myAssign = assigns.filter(a => a.profile_id === S.me.id && (!a.due_date || a.due_date <= addDays(t, 3)));
-    const kidsLate = isParent() ? assigns.filter(a => a.due_date && a.due_date < t) : [];
+    const myAssign = openAssigns.filter(a => a.profile_id === S.me.id && (!a.due_date || a.due_date <= addDays(t, 3)));
+    const kidsLate = isParent() ? openAssigns.filter(a => a.due_date && a.due_date < t) : [];
+    const myRocks = rocks.filter(r => r.profile_id === S.me.id && r.week_start === ws);
     const isSunday = new Date().getDay() === 0;
     const hour = new Date().getHours(); const greet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
     view.innerHTML = `<h1>${greet}, ${esc(S.me.display_name)} ${esc(S.me.emoji)}</h1>
-      ${isSunday ? '<div class="callout" style="margin-bottom:10px"><b>It\'s Sunday.</b> Ten minutes: plan next week\'s rocks and do your goal check-in. <a href="#" data-go="goals">Open Goals ›</a></div>' : ''}
+      ${ringsHtml({ chores, comps, assigns, rocks, tasks }, t)}
+      ${isSunday ? '<div class="callout" style="margin:10px 0"><b>It\'s Sunday.</b> Ten minutes: plan next week\'s rocks and do your goal check-in. <a href="#" data-go="goals">Open Goals ›</a></div>' : ''}
       <h2>My chores today</h2><div class="card">${myChores.length ? myChores.map(c => { const on = comps.some(x => x.chore_id === c.id && x.done_on === t); return `<div class="item ${on ? 'done' : ''}"><button class="check ${on ? 'on' : ''}" data-c="${c.id}">${on ? '✓' : ''}</button><div class="grow title">${esc(c.title)}</div><span class="tiny muted">${c.points}pt</span></div>`; }).join('') : '<div class="empty">Nothing due today 🎉</div>'}</div>
       <h2>School · due soon</h2><div class="card">${myAssign.length ? myAssign.map(a => `<div class="item"><div class="grow"><div class="title">${esc(a.title)}</div><div class="tiny muted">${esc(a.class_name || '')}${a.due_date ? ' · ' + (a.due_date < t ? '<span class="pill red">Late</span> ' : '') + fmtDate(a.due_date) : ''}</div></div></div>`).join('') : '<div class="empty">Nothing due in the next 3 days.</div>'}
         ${kidsLate.length ? `<div class="item"><span class="pill red">Parent view</span><div class="grow small">${kidsLate.length} overdue across the family: ${kidsLate.map(a => esc(pname(a.profile_id))).filter((v, i, arr) => arr.indexOf(v) === i).join(', ')}</div></div>` : ''}</div>
-      <h2>My rocks this week</h2><div class="card rockbox">${rocks.length ? rocks.map(r => `<div class="item ${r.done ? 'done' : ''}"><span>${r.done ? '✅' : '🪨'}</span><div class="grow"><div class="title">${esc(r.title)}</div><div class="tiny muted">${r.day_of_week != null ? DAYS[r.day_of_week] : 'no day'}${r.at_time ? ' · ' + fmtClock(r.at_time) : ''}</div></div></div>`).join('') : '<div class="empty">No rocks placed. <a href="#" data-go="goals">Pick 1–3 ›</a></div>'}
+      <h2>My rocks this week</h2><div class="card rockbox">${myRocks.length ? myRocks.map(r => `<div class="item ${r.done ? 'done' : ''}"><button class="check ${r.done ? 'on' : ''}" data-rock="${r.id}">${r.done ? '✓' : ''}</button><div class="grow"><div class="title">${esc(r.title)}</div><div class="tiny muted">${r.day_of_week != null ? DAYS[r.day_of_week] : 'no day'}${r.at_time ? ' · ' + fmtClock(r.at_time) : ''}</div></div></div>`).join('') : '<div class="empty">No rocks placed. <a href="#" data-go="goals">Pick 1–3 ›</a></div>'}
         ${goals.map(g => `<div class="item"><span>${AREAS[g.area]?.[1] || '🎯'}</span><div class="grow small"><b>${esc(g.title)}</b><div class="tiny muted">${AREAS[g.area]?.[0] || ''} · ${Math.max(0, daysBetween(t, g.end_date))} days left</div></div></div>`).join('')}${goals.length < 4 ? `<div class="item tiny muted">${4 - goals.length} of 4 areas still need a goal. <a href="#" data-go="goals">Set one ›</a></div>` : ''}</div>
       <h2>Coming up this week</h2><div class="card">${week.length ? week.map(e => `<div class="item"><div class="small muted" style="min-width:64px">${fmtDate(dayOf(e)).split(',')[0]}<br>${e.all_day ? 'all day' : fmtTime(e.starts_at)}</div><div class="grow"><div class="title">${esc(e.title)}</div><div class="tiny muted">${CATS[e.category] || ''}${e.location ? ' · ' + esc(e.location) : ''}</div></div></div>`).join('') : '<div class="empty">Nothing on the family calendar this week.</div>'}</div>`;
     $$('.check[data-c]').forEach(b => b.onclick = () => toggleChore(chores.find(c => c.id === b.dataset.c), t, comps, renderHome));
+    $$('.check[data-rock]').forEach(b => b.onclick = async () => { const r = myRocks.find(x => x.id === b.dataset.rock); await q(sb.from('rocks').update({ done: !r.done }).eq('id', r.id)); renderHome(); });
+    $$('[data-ring]').forEach(b => b.onclick = () => { S.person = b.dataset.ring; S.week = monday(today()); go('chores'); });
     $$('[data-go]').forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.go); });
   }
 
