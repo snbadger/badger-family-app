@@ -9,7 +9,7 @@
 
   // ───────── helpers ─────────
   const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const CATS = { family: '👨‍👩‍👧‍👦 Family', fhe: '🏠 FHE', trip: '🚗 Trip', church: '⛪ Church', school: '🎓 School', sports: '🏀 Sports', other: '📌 Other' };
+  const CATS = { google: '📆 Google Calendar', family: '👨‍👩‍👧‍👦 Family', fhe: '🏠 FHE', trip: '🚗 Trip', church: '⛪ Church', school: '🎓 School', sports: '🏀 Sports', other: '📌 Other' };
   const AREAS = { spiritual: ['Spiritual', '🙏', 'favour with God'], social: ['Social', '🤝', 'favour with man'], physical: ['Physical', '💪', 'stature'], intellectual: ['Intellectual', '📖', 'wisdom'] };
   const EMOJIS = ['🦡', '😀', '😎', '🤓', '🥳', '🦁', '🐯', '🐻', '🦊', '🐼', '🐨', '🦄', '🐸', '🐙', '🦖', '🚀', '⚽', '🎸', '🎨', '📚', '🌟', '🔥', '🍕', '🌮'];
   const COLORS = ['#1f3a5f', '#2e7d7b', '#b83232', '#c47f17', '#2f7a3d', '#6b3fa0', '#d6336c', '#0b7285', '#5c4033', '#495057'];
@@ -36,6 +36,19 @@
   function localIso(date, time) { return new Date(`${date}T${time || '00:00'}:00`).toISOString(); }
   function isoDate(iso) { return ymd(new Date(iso)); }
   function isoTime(iso) { const d = new Date(iso); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+
+  // ───────── google family calendar (read-only via edge function) ─────────
+  const dayOf = e => e._day || isoDate(e.starts_at);
+  async function loadGcal(force) {
+    if (!force && S.gcal && Date.now() - S.gcal.at < 300000) return S.gcal.events;
+    try {
+      const { data, error } = await sb.functions.invoke('gcal' + (force ? '?refresh=1' : ''));
+      if (error) throw error;
+      const events = (data?.events || []).map(g => ({ id: 'g:' + g.id, title: g.title, starts_at: g.start, ends_at: g.end, all_day: g.allDay, location: g.location, category: 'google', notes: null, _day: g.allDay ? g.startDate : null, _google: true }));
+      S.gcal = { at: Date.now(), events, configured: !!data?.configured, error: data?.error || null };
+    } catch (e) { console.warn('gcal', e); S.gcal = { at: Date.now(), events: [], configured: null, error: e.message || String(e) }; }
+    return S.gcal.events;
+  }
 
   // ───────── modal form builder ─────────
   function closeModal() { $('#modal').hidden = true; $('#modal-body').innerHTML = ''; }
@@ -161,7 +174,7 @@
   }
   $$('#tabs button').forEach(b => b.onclick = () => go(b.dataset.tab));
   $('#btn-me').onclick = () => go('family');
-  $('#btn-refresh').onclick = () => go(S.tab);
+  $('#btn-refresh').onclick = () => { S.gcal = null; go(S.tab); };
   function fab(onclick) { $$('.fab').forEach(x => x.remove()); const b = document.createElement('button'); b.className = 'fab'; b.textContent = '+'; b.onclick = onclick; document.body.appendChild(b); }
   function personChips(onchange, includeAll = true) {
     const opts = [...(includeAll && isParent() ? [{ id: 'all', label: 'Everyone' }] : []), ...S.profiles.map(p => ({ id: p.id, label: `${p.emoji} ${p.display_name}` }))];
@@ -308,10 +321,14 @@
   async function renderCalendar() {
     const from = S.showPast ? addDays(today(), -90) : today();
     const evs = await q(sb.from('events').select('*').gte('starts_at', new Date(from + 'T00:00:00').toISOString()).lte('starts_at', new Date(addDays(today(), 120) + 'T23:59:59').toISOString()).order('starts_at'));
+    const gAll = await loadGcal();
     if (S.tab !== 'calendar') return;
-    const byDay = {}; evs.forEach(e => { const d = isoDate(e.starts_at); (byDay[d] = byDay[d] || []).push(e); });
-    view.innerHTML = `<h1>Family plans</h1><div class="row between"><span class="small muted">Next 120 days</span><a href="#" id="tog-past" class="small">${S.showPast ? 'Hide past' : 'Show past'}</a></div>
-      ${Object.keys(byDay).length ? Object.entries(byDay).map(([d, list]) => `<div class="datehdr">${d === today() ? 'Today · ' : ''}${fmtDate(d)}</div><div class="card">${list.map(e => `<div class="item" data-ev="${e.id}">
+    const lim = addDays(today(), 120);
+    const merged = [...evs, ...gAll.filter(g => dayOf(g) >= from && dayOf(g) <= lim)].sort((a, b) => dayOf(a).localeCompare(dayOf(b)) || (a.all_day === b.all_day ? a.starts_at.localeCompare(b.starts_at) : a.all_day ? -1 : 1));
+    const byDay = {}; merged.forEach(e => { const d = dayOf(e); (byDay[d] = byDay[d] || []).push(e); });
+    const gNote = S.gcal?.error ? `<div class="tiny muted" style="margin-top:4px">Google Calendar: ${esc(S.gcal.error)}</div>` : (S.gcal && S.gcal.configured === false && isParent() ? '<div class="tiny muted" style="margin-top:4px">Google family calendar not connected yet. Connect it from the Family screen.</div>' : '');
+    view.innerHTML = `<h1>Family plans</h1><div class="row between"><span class="small muted">Next 120 days</span><a href="#" id="tog-past" class="small">${S.showPast ? 'Hide past' : 'Show past'}</a></div>${gNote}
+      ${Object.keys(byDay).length ? Object.entries(byDay).map(([d, list]) => `<div class="datehdr">${d === today() ? 'Today · ' : ''}${fmtDate(d)}</div><div class="card">${list.map(e => `<div class="item" ${e._google ? '' : `data-ev="${e.id}"`}>
         <div style="min-width:64px" class="small muted">${e.all_day ? 'All day' : fmtTime(e.starts_at) + (e.ends_at ? '<br>' + fmtTime(e.ends_at) : '')}</div>
         <div class="grow"><div class="title">${esc(e.title)}</div><div class="tiny muted">${CATS[e.category] || e.category}${e.location ? ' · ' + esc(e.location) : ''}${e.in_charge ? ' · ' + esc(pname(e.in_charge)) + ' in charge' : ''}</div>${e.notes ? `<div class="small" style="margin-top:4px;white-space:pre-wrap">${esc(e.notes)}</div>` : ''}</div>${e.in_charge ? avatar(prof(e.in_charge), 28) : ''}</div>`).join('')}</div>`).join('')
         : '<div class="card"><div class="empty">Nothing planned yet. Tap + to add a trip, FHE, game, or anything the family is doing.</div></div>'}`;
@@ -487,7 +504,10 @@
       q(sb.from('rocks').select('*').eq('profile_id', S.me.id).eq('week_start', ws).order('day_of_week', { nullsFirst: false })),
       q(sb.from('goals').select('*').eq('profile_id', S.me.id).eq('status', 'active').order('created_at'))
     ]);
+    const gAll = await loadGcal();
     if (S.tab !== 'home') return;
+    const gWeek = gAll.filter(g => dayOf(g) >= t && dayOf(g) <= addDays(t, 7));
+    const week = [...evs, ...gWeek].sort((a, b) => dayOf(a).localeCompare(dayOf(b)) || a.starts_at.localeCompare(b.starts_at));
     const myChores = chores.filter(c => c.assigned_to === S.me.id && choreDue(c, t, comps.filter(x => x.chore_id === c.id)));
     const myAssign = assigns.filter(a => a.profile_id === S.me.id && (!a.due_date || a.due_date <= addDays(t, 3)));
     const kidsLate = isParent() ? assigns.filter(a => a.due_date && a.due_date < t) : [];
@@ -500,7 +520,7 @@
         ${kidsLate.length ? `<div class="item"><span class="pill red">Parent view</span><div class="grow small">${kidsLate.length} overdue across the family: ${kidsLate.map(a => esc(pname(a.profile_id))).filter((v, i, arr) => arr.indexOf(v) === i).join(', ')}</div></div>` : ''}</div>
       <h2>My rocks this week</h2><div class="card rockbox">${rocks.length ? rocks.map(r => `<div class="item ${r.done ? 'done' : ''}"><span>${r.done ? '✅' : '🪨'}</span><div class="grow"><div class="title">${esc(r.title)}</div><div class="tiny muted">${r.day_of_week != null ? DAYS[r.day_of_week] : 'no day'}${r.at_time ? ' · ' + fmtClock(r.at_time) : ''}</div></div></div>`).join('') : '<div class="empty">No rocks placed. <a href="#" data-go="goals">Pick 1–3 ›</a></div>'}
         ${goals.map(g => `<div class="item"><span>${AREAS[g.area]?.[1] || '🎯'}</span><div class="grow small"><b>${esc(g.title)}</b><div class="tiny muted">${AREAS[g.area]?.[0] || ''} · ${Math.max(0, daysBetween(t, g.end_date))} days left</div></div></div>`).join('')}${goals.length < 4 ? `<div class="item tiny muted">${4 - goals.length} of 4 areas still need a goal. <a href="#" data-go="goals">Set one ›</a></div>` : ''}</div>
-      <h2>Coming up this week</h2><div class="card">${evs.length ? evs.map(e => `<div class="item"><div class="small muted" style="min-width:64px">${fmtDate(isoDate(e.starts_at)).split(',')[0]}<br>${e.all_day ? 'all day' : fmtTime(e.starts_at)}</div><div class="grow"><div class="title">${esc(e.title)}</div><div class="tiny muted">${CATS[e.category] || ''}${e.location ? ' · ' + esc(e.location) : ''}</div></div></div>`).join('') : '<div class="empty">Nothing on the family calendar this week.</div>'}</div>`;
+      <h2>Coming up this week</h2><div class="card">${week.length ? week.map(e => `<div class="item"><div class="small muted" style="min-width:64px">${fmtDate(dayOf(e)).split(',')[0]}<br>${e.all_day ? 'all day' : fmtTime(e.starts_at)}</div><div class="grow"><div class="title">${esc(e.title)}</div><div class="tiny muted">${CATS[e.category] || ''}${e.location ? ' · ' + esc(e.location) : ''}</div></div></div>`).join('') : '<div class="empty">Nothing on the family calendar this week.</div>'}</div>`;
     $$('.check[data-c]').forEach(b => b.onclick = () => toggleChore(chores.find(c => c.id === b.dataset.c), t, comps, renderHome));
     $$('[data-go]').forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.go); });
   }
@@ -513,11 +533,16 @@
     const comps = await q(sb.from('chore_completions').select('profile_id, chores(points)').gte('done_on', since));
     const pts = {}; comps.forEach(c => pts[c.profile_id] = (pts[c.profile_id] || 0) + (c.chores?.points || 0));
     const me = S.profiles.find(p => p.id === S.me.id) || S.me; S.me = me;
+    const settings = isParent() ? await q(sb.from('family_settings').select('*')) : [];
+    const gcalUrl = settings.find(x => x.key === 'gcal_ics_url')?.value || '';
     view.innerHTML = `<h1>Family</h1>
       <div class="card"><div class="row">${avatar(me, 44)}<div class="grow"><b>${esc(me.display_name)}</b><div class="tiny muted">${me.role} · ${esc(S.session.user.email)}</div></div><button class="btn sm secondary" id="edit-me">Edit</button></div></div>
       <h2>Members</h2><div class="card">${S.profiles.map(p => `<div class="item">${avatar(p)}<div class="grow"><div class="title">${esc(p.display_name)} ${p.id === me.id ? '<span class="tiny muted">(you)</span>' : ''}</div><div class="tiny muted"><span class="pill ${p.role === 'parent' ? 'teal' : ''}">${p.role}</span> ${p.approved ? '' : '<span class="pill amber">waiting for approval</span>'} · ${pts[p.id] || 0} pts / 30 days</div></div>
         ${isParent() && p.id !== me.id ? `<div class="row" style="gap:4px">${!p.approved ? `<button class="btn sm" data-approve="${p.id}">Approve</button>` : `<button class="btn sm secondary" data-role="${p.id}">${p.role === 'parent' ? 'Make kid' : 'Make parent'}</button>`}<button class="btn sm danger" data-remove="${p.id}">✕</button></div>` : ''}</div>`).join('')}</div>
       <p class="tiny muted">To add someone: they open this same link on their phone, tap "Create an account", and a parent approves them here.</p>
+      ${isParent() ? `<h2>Google family calendar</h2><div class="card"><p class="small muted" style="margin-top:0">Paste the calendar's <b>Secret address in iCal format</b> (Google Calendar on the web → Settings → your Family calendar → Integrate calendar). Its events then show read-only in Plans and Home for everyone.</p>
+        <input id="gcal-url" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics" value="${esc(gcalUrl)}" style="width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--card);margin-bottom:8px">
+        <div class="row"><span class="tiny muted grow">${gcalUrl ? '✅ Connected' : 'Not connected'}</span>${gcalUrl ? '<button class="btn sm ghost" id="gcal-clear">Disconnect</button>' : ''}<button class="btn sm" id="gcal-save">Save</button></div></div>` : ''}
       <h2>App</h2><div class="card"><p class="small muted">Add to your home screen: in Safari tap Share → <b>Add to Home Screen</b>. On Android, use the browser menu → <b>Install app</b>.</p><button class="btn danger block" id="signout">Sign out</button></div>`;
     $('#edit-me').onclick = () => openForm({
       title: 'Edit my profile', fields: [{ name: 'display_name', label: 'Name', required: true, value: me.display_name }, { name: 'emoji', label: 'Avatar', type: 'emoji', value: me.emoji }, { name: 'color', label: 'Color', type: 'color', value: me.color }],
@@ -526,6 +551,14 @@
     $$('[data-approve]').forEach(b => b.onclick = async () => { await q(sb.from('profiles').update({ approved: true }).eq('id', b.dataset.approve)); toast('Approved'); renderFamily(); });
     $$('[data-role]').forEach(b => b.onclick = async () => { const p = prof(b.dataset.role); await q(sb.from('profiles').update({ role: p.role === 'parent' ? 'kid' : 'parent' }).eq('id', p.id)); renderFamily(); });
     $$('[data-remove]').forEach(b => b.onclick = async () => { const p = prof(b.dataset.remove); if (confirm(`Remove ${p.display_name} from the family app? Their chores, assignments, and goals go with them.`)) { await q(sb.from('profiles').delete().eq('id', p.id)); renderFamily(); } });
+    $('#gcal-save') && ($('#gcal-save').onclick = async () => {
+      const v = $('#gcal-url').value.trim();
+      if (v && !/^https?:\/\/.+\.ics(\?.*)?$/i.test(v) && !/calendar\.google\.com\/calendar\/ical\//i.test(v)) return toast('That does not look like an iCal (.ics) address');
+      await q(sb.from('family_settings').upsert({ key: 'gcal_ics_url', value: v || null, updated_at: new Date().toISOString() }));
+      S.gcal = null; await loadGcal(true);
+      toast(S.gcal?.error ? 'Saved, but: ' + S.gcal.error : `Saved · ${S.gcal?.events.length || 0} events loaded`); renderFamily();
+    });
+    $('#gcal-clear') && ($('#gcal-clear').onclick = async () => { await q(sb.from('family_settings').upsert({ key: 'gcal_ics_url', value: null, updated_at: new Date().toISOString() })); S.gcal = null; renderFamily(); });
     $('#signout').onclick = () => sb.auth.signOut();
   }
 
