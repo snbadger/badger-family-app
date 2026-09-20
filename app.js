@@ -110,7 +110,7 @@
         if (signup) {
           const display_name = form.elements.display_name.value.trim();
           const emoji = $('.daypick button.on', form)?.dataset.d || '🦡';
-          const { data, error } = await sb.auth.signUp({ email, password, options: { data: { display_name, emoji } } });
+          const { data, error } = await sb.auth.signUp({ email, password, options: { data: { display_name, emoji }, emailRedirectTo: location.origin + location.pathname } });
           if (error) throw error;
           if (!data.session) renderAuth('signin', 'Account created. Check your email for a confirmation link, then sign in here.');
         } else {
