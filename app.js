@@ -9,7 +9,7 @@
 
   // ───────── helpers ─────────
   const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const CATS = { google: '📆 Google Calendar', family: '👨‍👩‍👧‍👦 Family', fhe: '🏠 FHE', trip: '🚗 Trip', church: '⛪ Church', school: '🎓 School', sports: '🏀 Sports', other: '📌 Other' };
+  const CATS = { google: '📆 Family calendar', family: '👨‍👩‍👧‍👦 Family', fhe: '🏠 FHE', trip: '🚗 Trip', church: '⛪ Church', school: '🎓 School', sports: '🏀 Sports', other: '📌 Other' };
   const AREAS = { spiritual: ['Spiritual', '🙏', 'favour with God'], social: ['Social', '🤝', 'favour with man'], physical: ['Physical', '💪', 'stature'], intellectual: ['Intellectual', '📖', 'wisdom'] };
   const EMOJIS = ['🦡', '😀', '😎', '🤓', '🥳', '🦁', '🐯', '🐻', '🦊', '🐼', '🐨', '🦄', '🐸', '🐙', '🦖', '🚀', '⚽', '🎸', '🎨', '📚', '🌟', '🔥', '🍕', '🌮'];
   const COLORS = ['#1f3a5f', '#2e7d7b', '#b83232', '#c47f17', '#2f7a3d', '#6b3fa0', '#d6336c', '#0b7285', '#5c4033', '#495057'];
@@ -326,7 +326,7 @@
     const lim = addDays(today(), 120);
     const merged = [...evs, ...gAll.filter(g => dayOf(g) >= from && dayOf(g) <= lim)].sort((a, b) => dayOf(a).localeCompare(dayOf(b)) || (a.all_day === b.all_day ? a.starts_at.localeCompare(b.starts_at) : a.all_day ? -1 : 1));
     const byDay = {}; merged.forEach(e => { const d = dayOf(e); (byDay[d] = byDay[d] || []).push(e); });
-    const gNote = S.gcal?.error ? `<div class="tiny muted" style="margin-top:4px">Google Calendar: ${esc(S.gcal.error)}</div>` : (S.gcal && S.gcal.configured === false && isParent() ? '<div class="tiny muted" style="margin-top:4px">Google family calendar not connected yet. Connect it from the Family screen.</div>' : '');
+    const gNote = S.gcal?.error ? `<div class="tiny muted" style="margin-top:4px">Google Calendar: ${esc(S.gcal.error)}</div>` : (S.gcal && S.gcal.configured === false && isParent() ? '<div class="tiny muted" style="margin-top:4px">Family calendar not connected yet. Connect it from the Family screen.</div>' : '');
     view.innerHTML = `<h1>Family plans</h1><div class="row between"><span class="small muted">Next 120 days</span><a href="#" id="tog-past" class="small">${S.showPast ? 'Hide past' : 'Show past'}</a></div>${gNote}
       ${Object.keys(byDay).length ? Object.entries(byDay).map(([d, list]) => `<div class="datehdr">${d === today() ? 'Today · ' : ''}${fmtDate(d)}</div><div class="card">${list.map(e => `<div class="item" ${e._google ? '' : `data-ev="${e.id}"`}>
         <div style="min-width:64px" class="small muted">${e.all_day ? 'All day' : fmtTime(e.starts_at) + (e.ends_at ? '<br>' + fmtTime(e.ends_at) : '')}</div>
@@ -540,8 +540,8 @@
       <h2>Members</h2><div class="card">${S.profiles.map(p => `<div class="item">${avatar(p)}<div class="grow"><div class="title">${esc(p.display_name)} ${p.id === me.id ? '<span class="tiny muted">(you)</span>' : ''}</div><div class="tiny muted"><span class="pill ${p.role === 'parent' ? 'teal' : ''}">${p.role}</span> ${p.approved ? '' : '<span class="pill amber">waiting for approval</span>'} · ${pts[p.id] || 0} pts / 30 days</div></div>
         ${isParent() && p.id !== me.id ? `<div class="row" style="gap:4px">${!p.approved ? `<button class="btn sm" data-approve="${p.id}">Approve</button>` : `<button class="btn sm secondary" data-role="${p.id}">${p.role === 'parent' ? 'Make kid' : 'Make parent'}</button>`}<button class="btn sm danger" data-remove="${p.id}">✕</button></div>` : ''}</div>`).join('')}</div>
       <p class="tiny muted">To add someone: they open this same link on their phone, tap "Create an account", and a parent approves them here.</p>
-      ${isParent() ? `<h2>Google family calendar</h2><div class="card"><p class="small muted" style="margin-top:0">Paste the calendar's <b>Secret address in iCal format</b> (Google Calendar on the web → Settings → your Family calendar → Integrate calendar). Its events then show read-only in Plans and Home for everyone.</p>
-        <input id="gcal-url" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics" value="${esc(gcalUrl)}" style="width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--card);margin-bottom:8px">
+      ${isParent() ? `<h2>Shared family calendar</h2><div class="card"><p class="small muted" style="margin-top:0">Paste a subscription link for the family calendar: from iCloud, the calendar's public <b>webcal://</b> link (Calendar → share icon → Public Calendar); from Google, the <b>Secret address in iCal format</b>. Events then show read-only in Plans and Home for everyone.</p>
+        <input id="gcal-url" placeholder="webcal://… or https://…" value="${esc(gcalUrl)}" style="width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--card);margin-bottom:8px">
         <div class="row"><span class="tiny muted grow">${gcalUrl ? '✅ Connected' : 'Not connected'}</span>${gcalUrl ? '<button class="btn sm ghost" id="gcal-clear">Disconnect</button>' : ''}<button class="btn sm" id="gcal-save">Save</button></div></div>` : ''}
       <h2>App</h2><div class="card"><p class="small muted">Add to your home screen: in Safari tap Share → <b>Add to Home Screen</b>. On Android, use the browser menu → <b>Install app</b>.</p><button class="btn danger block" id="signout">Sign out</button></div>`;
     $('#edit-me').onclick = () => openForm({
@@ -553,7 +553,7 @@
     $$('[data-remove]').forEach(b => b.onclick = async () => { const p = prof(b.dataset.remove); if (confirm(`Remove ${p.display_name} from the family app? Their chores, assignments, and goals go with them.`)) { await q(sb.from('profiles').delete().eq('id', p.id)); renderFamily(); } });
     $('#gcal-save') && ($('#gcal-save').onclick = async () => {
       const v = $('#gcal-url').value.trim();
-      if (v && !/^https?:\/\/.+\.ics(\?.*)?$/i.test(v) && !/calendar\.google\.com\/calendar\/ical\//i.test(v)) return toast('That does not look like an iCal (.ics) address');
+      if (v && !/^(webcal|https?):\/\//i.test(v)) return toast('Paste the full link (it starts with webcal:// or https://)');
       await q(sb.from('family_settings').upsert({ key: 'gcal_ics_url', value: v || null, updated_at: new Date().toISOString() }));
       S.gcal = null; await loadGcal(true);
       toast(S.gcal?.error ? 'Saved, but: ' + S.gcal.error : `Saved · ${S.gcal?.events.length || 0} events loaded`); renderFamily();
