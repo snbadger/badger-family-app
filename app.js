@@ -160,7 +160,7 @@
   $$('#tabs button').forEach(b => b.onclick = () => go(b.dataset.tab));
   $('#btn-me').onclick = () => go('family');
   $('#btn-refresh').onclick = () => go(S.tab);
-  function fab(onclick) { const b = document.createElement('button'); b.className = 'fab'; b.textContent = '+'; b.onclick = onclick; document.body.appendChild(b); }
+  function fab(onclick) { $$('.fab').forEach(x => x.remove()); const b = document.createElement('button'); b.className = 'fab'; b.textContent = '+'; b.onclick = onclick; document.body.appendChild(b); }
   function personChips(onchange, includeAll = true) {
     const opts = [...(includeAll && isParent() ? [{ id: 'all', label: 'Everyone' }] : []), ...S.profiles.map(p => ({ id: p.id, label: `${p.emoji} ${p.display_name}` }))];
     if (!opts.some(o => o.id === S.person)) S.person = opts[0].id;
@@ -224,6 +224,7 @@
   async function renderChores() {
     const ws = S.week || (S.week = monday(today()));
     const { chores, comps } = await loadChores(ws);
+    if (S.tab !== 'chores') return;
     const days = [...Array(7)].map((_, i) => addDays(ws, i));
     const rows = filtered(chores.filter(c => c.active), 'assigned_to').filter(c => days.some(d => choreDue(c, d, comps.filter(x => x.chore_id === c.id))));
     const pts = {}; S.profiles.forEach(p => pts[p.id] = 0);
@@ -265,6 +266,7 @@
   }
   async function renderSchool() {
     const all = await q(sb.from('assignments').select('*').order('due_date', { ascending: true, nullsFirst: false }));
+    if (S.tab !== 'school') return;
     const rows = filtered(all); const t = today(); const wk = addDays(t, 7);
     const open = rows.filter(a => a.status !== 'done'), done = rows.filter(a => a.status === 'done').slice(-30).reverse();
     const groups = [['Overdue', open.filter(a => a.due_date && a.due_date < t)], ['Due today', open.filter(a => a.due_date === t)], ['This week', open.filter(a => a.due_date > t && a.due_date <= wk)], ['Later', open.filter(a => a.due_date > wk)], ['No due date', open.filter(a => !a.due_date)]].filter(g => g[1].length);
@@ -304,6 +306,7 @@
   async function renderCalendar() {
     const from = S.showPast ? addDays(today(), -90) : today();
     const evs = await q(sb.from('events').select('*').gte('starts_at', new Date(from + 'T00:00:00').toISOString()).lte('starts_at', new Date(addDays(today(), 120) + 'T23:59:59').toISOString()).order('starts_at'));
+    if (S.tab !== 'calendar') return;
     const byDay = {}; evs.forEach(e => { const d = isoDate(e.starts_at); (byDay[d] = byDay[d] || []).push(e); });
     view.innerHTML = `<h1>Family plans</h1><div class="row between"><span class="small muted">Next 120 days</span><a href="#" id="tog-past" class="small">${S.showPast ? 'Hide past' : 'Show past'}</a></div>
       ${Object.keys(byDay).length ? Object.entries(byDay).map(([d, list]) => `<div class="datehdr">${d === today() ? 'Today · ' : ''}${fmtDate(d)}</div><div class="card">${list.map(e => `<div class="item" data-ev="${e.id}">
@@ -355,6 +358,7 @@
   }
   async function renderProjects() {
     const [projects, tasks] = await Promise.all([q(sb.from('projects').select('*').order('created_at')), q(sb.from('project_tasks').select('*').order('sort').order('created_at'))]);
+    if (S.tab !== 'projects') return;
     const stats = p => { const ts = tasks.filter(t => t.project_id === p.id); return { n: ts.length, done: ts.filter(t => t.status === 'done').length, spent: ts.reduce((a, t) => a + Number(t.cost || 0), 0) }; };
     if (S.projectId) {
       const p = projects.find(x => x.id === S.projectId); if (!p) { S.projectId = null; return renderProjects(); }
@@ -436,6 +440,7 @@
       q(sb.from('goals').select('*').eq('profile_id', pid).order('created_at', { ascending: false })),
       q(sb.from('goal_checkins').select('*'))
     ]);
+    if (S.tab !== 'goals') return;
     const active = goals.find(g => g.status === 'active'); const past = goals.filter(g => g.status !== 'active');
     const mine = canEditFor(pid);
     let goalHtml;
@@ -475,6 +480,7 @@
       q(sb.from('rocks').select('*').eq('profile_id', S.me.id).eq('week_start', ws).order('day_of_week', { nullsFirst: false })),
       q(sb.from('goals').select('*').eq('profile_id', S.me.id).eq('status', 'active').limit(1))
     ]);
+    if (S.tab !== 'home') return;
     const myChores = chores.filter(c => c.assigned_to === S.me.id && choreDue(c, t, comps.filter(x => x.chore_id === c.id)));
     const myAssign = assigns.filter(a => a.profile_id === S.me.id && (!a.due_date || a.due_date <= addDays(t, 3)));
     const kidsLate = isParent() ? assigns.filter(a => a.due_date && a.due_date < t) : [];
