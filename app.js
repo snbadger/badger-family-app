@@ -31,6 +31,14 @@
   const isParent = () => S.me?.role === 'parent';
   const canEditFor = id => isParent() || id === S.me.id;
   const daysBetween = (a, b) => Math.round((parseYmd(b) - parseYmd(a)) / 864e5);
+  const monthsBetween = (a, b) => { const A = parseYmd(a), B = parseYmd(b); return (B.getFullYear() - A.getFullYear()) * 12 + (B.getMonth() - A.getMonth()); };
+  // Who owns a chore on a given date: fixed assignee, or the person whose turn it is in a weekly/monthly rotation.
+  function assigneeOn(c, d) {
+    const r = c.rotation || []; if (r.length < 2) return c.assigned_to;
+    const start = c.rotation_start || today();
+    const k = c.rotation_unit === 'month' ? monthsBetween(start, d) : Math.floor(daysBetween(monday(start), monday(d)) / 7);
+    return r[((k % r.length) + r.length) % r.length];
+  }
   function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(t._t); t._t = setTimeout(() => t.hidden = true, 2200); }
   async function q(p) { const { data, error } = await p; if (error) { console.error(error); toast(error.message); throw error; } return data; }
   function localIso(date, time) { return new Date(`${date}T${time || '00:00'}:00`).toISOString(); }
@@ -61,6 +69,7 @@
       case 'select': return `<label class="field">${lab}<select name="${f.name}">${f.options.map(o => `<option value="${esc(o.v)}" ${String(o.v) === String(v) ? 'selected' : ''}>${esc(o.l)}</option>`).join('')}</select></label>`;
       case 'person': return fieldHtml({ ...f, type: 'select', options: [...(f.allowNone ? [{ v: '', l: '— nobody —' }] : []), ...S.profiles.map(p => ({ v: p.id, l: `${p.emoji} ${p.display_name}` }))] });
       case 'checkbox': return `<label class="field row"><input type="checkbox" name="${f.name}" ${v ? 'checked' : ''} style="width:auto"> <span style="margin:0">${esc(f.label)}</span></label>`;
+      case 'people': return `<div class="field">${lab}<div class="daypick" data-name="${f.name}" style="flex-wrap:wrap">${S.profiles.map(p => `<button type="button" data-d="${p.id}" class="${(v || []).includes(p.id) ? 'on' : ''}" style="flex:1 1 40%">${esc(p.emoji)} ${esc(p.display_name)}</button>`).join('')}</div></div>`;
       case 'days': return `<div class="field">${lab}<div class="daypick" data-name="${f.name}">${[1, 2, 3, 4, 5, 6, 0].map(d => `<button type="button" data-d="${d}" class="${(v || []).includes(d) ? 'on' : ''}">${DAYS[d]}</button>`).join('')}</div></div>`;
       case 'emoji': return `<div class="field">${lab}<div class="daypick" data-name="${f.name}" style="flex-wrap:wrap">${EMOJIS.map(e => `<button type="button" data-d="${e}" class="${v === e ? 'on' : ''}" style="flex:0 0 40px;font-size:20px">${e}</button>`).join('')}</div></div>`;
       case 'color': return `<div class="field">${lab}<div class="daypick" data-name="${f.name}" style="flex-wrap:wrap">${COLORS.map(c => `<button type="button" data-d="${c}" class="${v === c ? 'on' : ''}" style="flex:0 0 40px;height:34px;background:${c};border-color:${c}${v === c ? ';outline:3px solid var(--ink)' : ''}"></button>`).join('')}</div></div>`;
@@ -71,6 +80,7 @@
     const out = {};
     for (const f of fields) {
       if (f.type === 'days') out[f.name] = $$(`.daypick[data-name="${f.name}"] button.on`, form).map(b => Number(b.dataset.d));
+      else if (f.type === 'people') out[f.name] = $$(`.daypick[data-name="${f.name}"] button.on`, form).map(b => b.dataset.d);
       else if (f.type === 'emoji' || f.type === 'color') out[f.name] = $(`.daypick[data-name="${f.name}"] button.on`, form)?.dataset.d || f.value || '';
       else if (f.type === 'checkbox') out[f.name] = form.elements[f.name].checked;
       else out[f.name] = form.elements[f.name].value;
@@ -218,7 +228,7 @@
     return { chores, comps };
   }
   async function toggleChore(chore, d, comps, refresh) {
-    const who = chore.assigned_to || S.me.id;
+    const who = assigneeOn(chore, d) || S.me.id;
     if (!canEditFor(who)) return toast('Only ' + pname(who) + ' or a parent can check this off');
     const ex = comps.find(x => x.chore_id === chore.id && x.done_on === d);
     if (ex) await q(sb.from('chore_completions').delete().eq('id', ex.id));
@@ -233,12 +243,17 @@
       { name: 'days', label: 'Days (for weekly)', type: 'days', value: existing?.days || [] },
       { name: 'due_date', label: 'Due date (for one-time)', type: 'date', value: existing?.due_date || '' },
       { name: 'points', label: 'Points', type: 'number', value: existing?.points ?? 1, min: 0 },
+      { name: 'rotation', label: 'Or rotate between (pick 2+; the first person listed goes first)', type: 'people', value: existing?.rotation || [] },
+      { name: 'rotation_unit', label: 'Rotate every', type: 'select', value: existing?.rotation_unit || 'week', options: [{ v: 'week', l: 'Week' }, { v: 'month', l: 'Month' }] },
+      { name: 'rotation_start', label: 'Rotation starts (first person owns this period)', type: 'date', value: existing?.rotation_start || '' },
       ...(existing ? [{ name: 'active', label: 'Active', type: 'checkbox', value: existing.active }] : [])
     ];
     openForm({
       title: existing ? 'Edit chore' : 'New chore', fields,
       onSubmit: async v => {
-        const row = { title: v.title.trim(), assigned_to: v.assigned_to || null, recurrence: v.recurrence, days: v.days, due_date: v.due_date || null, points: Number(v.points) || 0, active: existing ? v.active : true };
+        const rot = S.profiles.map(p => p.id).filter(id => v.rotation.includes(id));
+        if (rot.length === 1) throw new Error('Pick at least two people to rotate, or none.');
+        const row = { title: v.title.trim(), assigned_to: rot.length ? null : (v.assigned_to || null), recurrence: v.recurrence, days: v.days, due_date: v.due_date || null, points: Number(v.points) || 0, rotation: rot, rotation_unit: v.rotation_unit, rotation_start: rot.length ? (v.rotation_start || monday(today())) : null, active: existing ? v.active : true };
         if (v.recurrence === 'weekly' && !v.days.length) throw new Error('Pick at least one day.');
         if (v.recurrence === 'once' && !v.due_date) throw new Error('Pick a due date.');
         if (existing) await q(sb.from('chores').update(row).eq('id', existing.id)); else await q(sb.from('chores').insert({ ...row, created_by: S.me.id }));
@@ -252,13 +267,13 @@
     const { chores, comps } = await loadChores(ws);
     if (S.tab !== 'chores') return;
     const days = [...Array(7)].map((_, i) => addDays(ws, i));
-    const rows = filtered(chores.filter(c => c.active), 'assigned_to').filter(c => days.some(d => choreDue(c, d, comps.filter(x => x.chore_id === c.id))));
+    const rows = chores.filter(c => c.active).filter(c => days.some(d => choreDue(c, d, comps.filter(x => x.chore_id === c.id)) && (S.person === 'all' || assigneeOn(c, d) === S.person)));
     const pts = {}; S.profiles.forEach(p => pts[p.id] = 0);
     comps.filter(x => x.done_on >= ws && x.done_on <= days[6]).forEach(x => { const c = chores.find(k => k.id === x.chore_id); if (c && pts[x.profile_id] != null) pts[x.profile_id] += c.points; });
     view.innerHTML = `<h1>Chores</h1>${personChips(renderChores)}${weekNav(renderChores)}
       <div class="card">${rows.length ? `<div class="grid7"><div></div>${days.map(d => `<div class="dh ${d === today() ? 'today' : ''}">${DAYS[dow(d)][0]}</div>`).join('')}
-        ${rows.map(c => `<div class="name" data-edit="${c.id}">${S.person === 'all' && c.assigned_to ? avatar(prof(c.assigned_to), 22) + ' ' : ''}${esc(c.title)}<span class="tiny muted"> ${c.points}pt</span></div>
-          ${days.map(d => { const cs = comps.filter(x => x.chore_id === c.id); const due = choreDue(c, d, cs); const on = cs.some(x => x.done_on === d); return `<button class="check ${on ? 'on' : ''} ${due ? '' : 'na'}" data-c="${c.id}" data-d="${d}">${on ? '✓' : ''}</button>`; }).join('')}`).join('')}</div>`
+        ${rows.map(c => `<div class="name" data-edit="${c.id}">${S.person === 'all' && assigneeOn(c, days[0]) ? avatar(prof(assigneeOn(c, days[0])), 22) + ' ' : ''}${esc(c.title)}<span class="tiny muted"> ${c.points}pt${(c.rotation || []).length > 1 ? ' ↻' : ''}</span></div>
+          ${days.map(d => { const cs = comps.filter(x => x.chore_id === c.id); const due = choreDue(c, d, cs) && (S.person === 'all' || assigneeOn(c, d) === S.person); const on = cs.some(x => x.done_on === d); return `<button class="check ${on ? 'on' : ''} ${due ? '' : 'na'}" data-c="${c.id}" data-d="${d}">${on ? '✓' : ''}</button>`; }).join('')}`).join('')}</div>`
         : `<div class="empty">No chores this week${isParent() ? '. Tap + to add one.' : '.'}</div>`}</div>
       <h2>Points this week</h2><div class="card">${S.profiles.map(p => `<div class="item">${avatar(p)}<div class="grow">${esc(p.display_name)}</div><b>${pts[p.id]}</b></div>`).join('')}</div>`;
     $$('.check[data-c]').forEach(b => b.onclick = () => toggleChore(chores.find(c => c.id === b.dataset.c), b.dataset.d, comps, renderChores));
@@ -519,7 +534,7 @@
     if (S.tab !== 'home') return;
     const gWeek = gAll.filter(g => dayOf(g) >= t && dayOf(g) <= addDays(t, 7));
     const week = [...evs, ...gWeek].sort((a, b) => dayOf(a).localeCompare(dayOf(b)) || a.starts_at.localeCompare(b.starts_at));
-    const myChores = chores.filter(c => c.assigned_to === S.me.id && choreDue(c, t, comps.filter(x => x.chore_id === c.id)));
+    const myChores = chores.filter(c => assigneeOn(c, t) === S.me.id && choreDue(c, t, comps.filter(x => x.chore_id === c.id)));
     const myAssign = assigns.filter(a => a.profile_id === S.me.id && (!a.due_date || a.due_date <= addDays(t, 3)));
     const kidsLate = isParent() ? assigns.filter(a => a.due_date && a.due_date < t) : [];
     const isSunday = new Date().getDay() === 0;
